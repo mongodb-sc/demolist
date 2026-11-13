@@ -21,6 +21,10 @@ from typing import TypedDict
 
 DRONE_SERVER = os.environ.get("DRONE_SERVER", "https://drone.corp.mongodb.com").rstrip("/")
 ORG = "mongodb-sc"
+# Hand-maintained from this wiki. Refresh rewrites the GitHub and Drone tables
+# and splices the SA Demo Toolkits section back from the previous README.
+WIKI_TOOLKITS = "https://wiki.corp.mongodb.com/spaces/10GEN/pages/96680506/SA+Demo+Toolkits"
+TOOLKIT_HEADING = "## SA Demo Toolkits"
 # shortcut: a successful deploy older than this window is missed, raise it if a pipeline's last success falls off the list.
 BUILD_WINDOW = 25
 HOST_RE = re.compile(
@@ -64,17 +68,23 @@ def main() -> None:
     token = os.environ.get("DRONE_TOKEN", "")
     if not token:
         raise SystemExit("Set DRONE_TOKEN from https://drone.corp.mongodb.com/account")
-    repos = github_repos()
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
+    old = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            old = handle.read()
+    repos = github_repos(previous_descriptions(old))
     by_name = {repo["name"]: repo for repo in repos}
     endpoints, quiet = drone_endpoints(token, by_name)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
+    rendered = insert_toolkit(render(repos, endpoints, quiet, generated), extract_toolkit(old))
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write(render(repos, endpoints, quiet, generated))
+        handle.write(rendered)
     print(f"wrote {path}: {len(repos)} repositories, {len(endpoints)} endpoints")
 
 
-def github_repos() -> list[Repo]:
+def github_repos(previous: dict[str, str] | None = None) -> list[Repo]:
+    kept = previous or {}
     raw = gh_api(f"orgs/{ORG}/repos?per_page=100&type=all")
     repos: list[Repo] = []
     for item in raw:
@@ -83,12 +93,18 @@ def github_repos() -> list[Repo]:
         if item.get("archived"):
             label += " archive"
         language = item.get("language") or ""
+        name = str(item["name"])
+        github_description = str(item.get("description") or "").strip()
+        if github_description:
+            description = github_description
+        else:
+            description = choose_description("", readme_body(name), kept.get(name, ""))
         repos.append(
             {
-                "name": str(item["name"]),
+                "name": name,
                 "visibility": label,
                 "language": str(language),
-                "description": str(item.get("description") or "").strip(),
+                "description": description,
             }
         )
     repos.sort(key=lambda repo: repo["name"].casefold())
@@ -263,6 +279,102 @@ def dedupe(urls: object) -> list[str]:
         if url and url not in seen:
             seen.append(str(url))
     return seen
+
+
+def choose_description(github_description: str, readme: str, previous: str = "") -> str:
+    text = github_description.strip()
+    if text:
+        return text
+    sentence = first_sentence(readme)
+    if sentence:
+        return sentence
+    return previous.strip()
+
+
+def first_sentence(text: str) -> str:
+    # shortcut: splits on ". " before a capital, so versions like 8.3.7 stay intact; upgrade if a README's first sentence uses "e.g. Next".
+    cleaned = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
+    if cleaned.lstrip().startswith("---"):
+        end = cleaned.find("\n---", 3)
+        if end != -1:
+            cleaned = cleaned[end + 4 :]
+    paragraph: list[str] = []
+    for raw in cleaned.splitlines():
+        line = raw.strip()
+        if not line:
+            if paragraph:
+                break
+            continue
+        if line.startswith("#") or re.fullmatch(r"[=-]{3,}", line):
+            continue
+        if line.startswith("![") or line.startswith("[!["):
+            continue
+        if re.fullmatch(r"(?:\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)\s*)+", line):
+            continue
+        if line.startswith("<") and not re.sub(r"<[^>]+>", "", line).strip():
+            continue
+        paragraph.append(line)
+    prose = re.sub(r"\s+", " ", " ".join(paragraph)).strip()
+    if not prose:
+        return ""
+    match = re.search(r".+?[.!?](?=\s+[A-Z]|\s*$)", prose)
+    if not match:
+        return prose
+    return match.group(0).strip()
+
+
+def readme_body(repo: str) -> str:
+    quoted = urllib.parse.quote(repo, safe="")
+    try:
+        payload = gh_api_one(f"repos/{ORG}/{quoted}/readme")
+    except SystemExit:
+        return ""
+    if not isinstance(payload, dict) or "content" not in payload:
+        return ""
+    return base64.b64decode(str(payload["content"])).decode("utf-8", errors="replace")
+
+
+def previous_descriptions(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    in_repos = False
+    for line in text.splitlines():
+        if line.startswith("## Repositories"):
+            in_repos = True
+            continue
+        if in_repos and line.startswith("## "):
+            break
+        if not in_repos or not line.startswith("| ["):
+            continue
+        parts = [part.strip() for part in line.strip().strip("|").split("|")]
+        if len(parts) < 4:
+            continue
+        match = re.match(r"\[([^\]]+)\]", parts[0])
+        if not match:
+            continue
+        found[match.group(1)] = parts[-1]
+    return found
+
+
+def extract_toolkit(text: str) -> str:
+    match = re.search(
+        rf"(?:^|\n)({re.escape(TOOLKIT_HEADING)}\n.*?)(?=\n## |\Z)",
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return (
+            f"{TOOLKIT_HEADING}\n\n"
+            f"Hand-maintained from the [SA Demo Toolkits wiki]({WIKI_TOOLKITS}).\n"
+        )
+    return match.group(1).strip() + "\n"
+
+
+def insert_toolkit(rendered: str, toolkit: str) -> str:
+    block = toolkit.strip() + "\n"
+    marker = "\n## Repositories\n"
+    if marker not in rendered:
+        return rendered.rstrip() + "\n\n" + block
+    return rendered.replace(marker, "\n" + block + marker, 1)
 
 
 def render(repos: list[Repo], endpoints: list[Endpoint], quiet: list[str], generated: str) -> str:
@@ -449,6 +561,20 @@ callback: https://solutionstudio.sa.staging.corp.mongodb.com/input-aggregator/ap
 trino: https://trino-jwt-gateway.dataplatform.prod.corp.mongodb.com/
 """
     assert ingress_urls(values) == ["https://solutionstudio.sa.staging.corp.mongodb.com/"]
+    readme = """# Title
+
+[![badge](https://img.shields.io/badge/x-y-blue)](https://example.com)
+
+This repo tracks demo endpoints for the org. The rest is detail.
+"""
+    assert choose_description("", readme) == "This repo tracks demo endpoints for the org."
+    assert choose_description("Already set.", readme) == "Already set."
+    assert choose_description("", "", "Kept from the catalog.") == "Kept from the catalog."
+    sample = "## SA Demo Toolkits\n\nSample Toolkit heading stays.\n"
+    rendered = insert_toolkit(render([], [], [], "2026-01-01"), extract_toolkit(sample))
+    assert "## SA Demo Toolkits" in rendered
+    assert "Sample Toolkit" in rendered
+    assert rendered.index("## SA Demo Toolkits") < rendered.index("## Repositories")
 
 
 if __name__ == "__main__":
