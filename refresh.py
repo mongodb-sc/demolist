@@ -570,10 +570,20 @@ This repo tracks demo endpoints for the org. The rest is detail.
     assert choose_description("", readme) == "This repo tracks demo endpoints for the org."
     assert choose_description("Already set.", readme) == "Already set."
     assert choose_description("", "", "Kept from the catalog.") == "Kept from the catalog."
-    sample = "## SA Demo Toolkits\n\nSample Toolkit heading stays.\n"
+    sample = (
+        "## SA Demo Toolkits\n\n"
+        "Sample Toolkit heading stays.\n\n"
+        "| Demo | Description | Link |\n"
+        "| --- | --- | --- |\n"
+        "| Sample | Sample toolkit. | "
+        "[Repo](https://github.com/example/demo) "
+        "[Live demo](https://example.com/live) |\n"
+    )
     rendered = insert_toolkit(render([], [], [], "2026-01-01"), extract_toolkit(sample))
     assert "## SA Demo Toolkits" in rendered
     assert "Sample Toolkit" in rendered
+    assert "https://github.com/example/demo" in rendered
+    assert "https://example.com/live" in rendered
     assert rendered.index("## SA Demo Toolkits") < rendered.index("## Repositories")
 
 
