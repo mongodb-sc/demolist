@@ -573,17 +573,16 @@ This repo tracks demo endpoints for the org. The rest is detail.
     sample = (
         "## SA Demo Toolkits\n\n"
         "Sample Toolkit heading stays.\n\n"
-        "| Demo | Description | Link |\n"
-        "| --- | --- | --- |\n"
-        "| Sample | Sample toolkit. | "
-        "[Repo](https://github.com/example/demo) "
-        "[Live demo](https://example.com/live) |\n"
+        "| Demo | Description |\n"
+        "| --- | --- |\n"
+        "| [mSIDE demo app](https://mside-rqcve.mongodbstitch.com/), "
+        "[Github repo](https://github.com/10gen/presales-mside) | Sample toolkit. |\n"
     )
     rendered = insert_toolkit(render([], [], [], "2026-01-01"), extract_toolkit(sample))
     assert "## SA Demo Toolkits" in rendered
     assert "Sample Toolkit" in rendered
-    assert "https://github.com/example/demo" in rendered
-    assert "https://example.com/live" in rendered
+    assert "[mSIDE demo app](https://mside-rqcve.mongodbstitch.com/)" in rendered
+    assert "[Github repo](https://github.com/10gen/presales-mside)" in rendered
     assert rendered.index("## SA Demo Toolkits") < rendered.index("## Repositories")
 
 
